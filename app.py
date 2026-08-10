@@ -11,9 +11,8 @@ from docx import Document
 # ==========================================
 st.set_page_config(page_title="재무제표 AI 분석 시스템", page_icon="📊", layout="wide")
 
-st.sidebar.title("🔑 시스템 설정")
-api_key_input = st.sidebar.text_input("Gemini API 키를 입력하세요", type="password")
-API_KEY = api_key_input or st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
+
+API_KEY = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
 
 if not API_KEY:
     st.info("👈 왼쪽 사이드바에 발급받은 Gemini API 키를 입력하면 시스템이 활성화됩니다.")
