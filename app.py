@@ -33,53 +33,57 @@ def safe_div(numerator, denominator):
         return 0.0
 
 def extract_financial_data(pdf_bytes):
-    model = genai.GenerativeModel('gemini-3.6-flash') 
-    prompt = """
-    당신은 20년 경력의 재무 분석가입니다. 첨부된 재무제표 PDF를 읽고 다음 9가지 항목의 숫자를 추출하세요:
-    1. 총자산, 2. 총부채, 3. 자기자본(자본총계), 4. 유동자산, 5. 유동부채, 6. 장단기차입금(장기차입금+단기차입금), 7. 매출액, 8. 영업이익, 9. 이자비용
-    [조건]
-    - 단위(예: 백만원)를 파악하고, 무조건 '1원 단위의 절대금액(정수)'으로 변환하세요.
-    - 반드시 아래의 순수 JSON 형식으로만 답변하세요.
-    {"총자산": 0, "총부채": 0, "자기자본": 0, "유동자산": 0, "유동부채": 0, "장단기차입금": 0, "매출액": 0, "영업이익": 0, "이자비용": 0}
-    """
-    response = model.generate_content([{"mime_type": "application/pdf", "data": pdf_bytes}, prompt])
     try:
+        model = genai.GenerativeModel('gemini-3.6-flash') 
+        prompt = """
+        당신은 20년 경력의 재무 분석가입니다. 첨부된 재무제표 PDF를 읽고 다음 9가지 항목의 숫자를 추출하세요:
+        1. 총자산, 2. 총부채, 3. 자기자본(자본총계), 4. 유동자산, 5. 유동부채, 6. 장단기차입금(장기차입금+단기차입금), 7. 매출액, 8. 영업이익, 9. 이자비용
+        [조건]
+        - 단위(예: 백만원)를 파악하고, 무조건 '1원 단위의 절대금액(정수)'으로 변환하세요.
+        - 반드시 아래의 순수 JSON 형식으로만 답변하세요.
+        {"총자산": 0, "총부채": 0, "자기자본": 0, "유동자산": 0, "유동부채": 0, "장단기차입금": 0, "매출액": 0, "영업이익": 0, "이자비용": 0}
+        """
+        response = model.generate_content([{"mime_type": "application/pdf", "data": pdf_bytes}, prompt])
         clean_text = response.text.replace("```json", "").replace("```", "").strip()
         return json.loads(clean_text)
-    except:
+    except Exception as e:
+        st.error(f"데이터 추출 중 오류가 발생했습니다. API 키가 유효한지 확인해주세요. ({str(e)})")
         return None
 
 def generate_financial_report(metrics_data):
-    model = genai.GenerativeModel('gemini-3.6-flash')
-    debt_ratio_str = metrics_data['부채비율'] if isinstance(metrics_data['부채비율'], str) else f"{metrics_data['부채비율']:.1f}%"
-    prompt = f"""
-    당신은 기업의 재무 건전성을 평가하는 시니어 재무 분석가입니다. 
-    다음 산출된 5대 재무 지표를 심층 진단하세요.
-    [산출 데이터]
-    - 부채비율: {debt_ratio_str}
-    - 유동비율: {metrics_data['유동비율']:.1f}%
-    - 차입금의존도: {metrics_data['차입금의존도']:.1f}%
-    - 매출액영업이익률: {metrics_data['매출액영업이익률']:.1f}%
-    - 이자보상배율: {metrics_data['이자보상배율']:.1f}배
+    try:
+        model = genai.GenerativeModel('gemini-3.6-flash')
+        debt_ratio_str = metrics_data['부채비율'] if isinstance(metrics_data['부채비율'], str) else f"{metrics_data['부채비율']:.1f}%"
+        prompt = f"""
+        당신은 기업의 재무 건전성을 평가하는 시니어 재무 분석가입니다. 
+        다음 산출된 5대 재무 지표를 심층 진단하세요.
+        [산출 데이터]
+        - 부채비율: {debt_ratio_str}
+        - 유동비율: {metrics_data['유동비율']:.1f}%
+        - 차입금의존도: {metrics_data['차입금의존도']:.1f}%
+        - 매출액영업이익률: {metrics_data['매출액영업이익률']:.1f}%
+        - 이자보상배율: {metrics_data['이자보상배율']:.1f}배
 
-    [작성 규칙]
-    1. 각 지표별로 "양호", "보통", "주의", "위험", "적자", "부도 위험", "자본잠식" 중 가장 적합한 키워드를 골라 반드시 `- [키워드]` 형태로 요약 결론을 내려주세요.
-    2. 긍정적 내용은 `:blue[파란색]`, 부정적 내용은 `:red[빨간색]`, 중간은 `:orange[주황색]` Streamlit 태그로 시각적 강조를 해주세요.
+        [작성 규칙]
+        1. 각 지표별로 "양호", "보통", "주의", "위험", "적자", "부도 위험", "자본잠식" 중 가장 적합한 키워드를 골라 반드시 `- [키워드]` 형태로 요약 결론을 내려주세요.
+        2. 긍정적 내용은 `:blue[파란색]`, 부정적 내용은 `:red[빨간색]`, 중간은 `:orange[주황색]` Streamlit 태그로 시각적 강조를 해주세요.
 
-    [작성 예시 - 반드시 이 형식을 지키세요!]
-    (1) 부채비율: 292.5% - :red[위험]
-    - 기준: 일반 제조업 권장 기준 200% 이하
-    - 진단: 권장 기준을 크게 초과하여 타인자본 의존도가 매우 높은 :red[불안정한 상태]입니다.
-    (2) 유동비율: 109.2% - :orange[주의]
-    - 기준: 일반 제조업 권장 기준 150% 이상
-    - 진단: 100%를 겨우 넘어 단기 채무를 가까스로 상환할 수 있는 :orange[아슬아슬한 유동성 수준]입니다.
-
-    한국통계시스템의 최신 중견기업 제조업 평균 통계를 모를 경우 "일반적인 제조업 재무 건전성 기준"으로 평가한다고 명시하세요.
-    """
-    response = model.generate_content(prompt)
-    return response.text
+        [작성 예시]
+        (1) 부채비율: 292.5% - :red[위험]
+        - 기준: 일반 제조업 권장 기준 200% 이하
+        - 진단: 권장 기준을 크게 초과하여 타인자본 의존도가 매우 높은 :red[불안정한 상태]입니다.
+        """
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        # AI가 뻗어도 앱이 죽지 않도록 방어막 문자열 반환
+        return f"🚨 AI 리포트 생성 실패: 연결 오류 또는 API 키를 다시 확인해주세요. (상세에러: {str(e)})"
 
 def extract_status_from_report(report_text, metric_name):
+    # 방어막: 텍스트가 없으면 오류 대신 '분석실패' 출력
+    if not report_text: 
+        return "⚪️ 분석실패"
+    
     pattern = re.compile(f".*?{metric_name}.*?(-|:).*?(:red|:blue|:orange)\[(.*?)\]", re.DOTALL)
     match = pattern.search(report_text)
     if match:
@@ -90,15 +94,17 @@ def extract_status_from_report(report_text, metric_name):
              return f"🔵 {status_text}"
         else:
              return f"🟠 {status_text}"
-    return "⚪️ 분석중"
+    return "⚪️ 측정불가"
 
 def generate_word_document(metrics, report_text):
-    """워드 문서 생성 함수 (텍스트 래핑 지원)"""
+    # 방어막: 텍스트가 없으면 임시 문구 대체
+    if not report_text:
+        report_text = "리포트가 생성되지 않았습니다."
+        
     doc = Document()
     doc.add_heading('📊 재무제표 AI 분석 & 심층 진단 리포트', 0)
     
     doc.add_heading('1. 핵심 재무 지표 요약', level=1)
-    
     debt_str = metrics['부채비율'] if isinstance(metrics['부채비율'], str) else f"{metrics['부채비율']:.1f}%"
     doc.add_paragraph(f"• 부채비율: {debt_str}")
     doc.add_paragraph(f"• 유동비율: {metrics['유동비율']:.1f}%")
@@ -107,8 +113,6 @@ def generate_word_document(metrics, report_text):
     doc.add_paragraph(f"• 이자보상배율: {metrics['이자보상배율']:.2f}배")
     
     doc.add_heading('2. AI 심층 진단 상세 내역', level=1)
-    
-    # 웹용 색상 태그(:red[위험] 등)를 워드 문서에 맞게 깔끔한 텍스트로 변환
     clean_report = re.sub(r':(red|blue|orange)\[(.*?)\]', r'\2', report_text)
     doc.add_paragraph(clean_report)
     
