@@ -457,20 +457,20 @@ def generate_word_document(metrics, report_text):
 
     for idx, (name, val, status) in enumerate(rows_data):
         row_cells = table.add_row().cells
-        
+
         # 1열: 지표명
         p0 = row_cells[0].paragraphs[0]
         r0 = p0.add_run(name)
         r0.font.size = Pt(10.5)
         r0.bold = True
         r0.font.color.rgb = NAVY
-        
-        # 2열: 산출값
-        p1 = row_cells.paragraphs[0]
+
+        # 2열: 산출값  (※ row_cells[1] 인덱스 누락 수정)
+        p1 = row_cells[1].paragraphs[0]
         p1.alignment = WD_ALIGN_PARAGRAPH.CENTER
         r1 = p1.add_run(val)
         r1.font.size = Pt(10.5)
-        
+
         # 3열: 진단 결과
         p2 = row_cells[2].paragraphs[0]
         p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -479,7 +479,8 @@ def generate_word_document(metrics, report_text):
         r2.bold = True
         r2.font.size = Pt(10.5)
 
-        if any(k in status_clean for k in ["위험", "적자", "부도", "주의", "자본잠식"]):
+        # 화면(Streamlit) 배지 색상 규칙과 동일하게 정렬: 위험군=RED, 양호=BLUE, 나머지(주의/보통 등)=ORANGE
+        if any(k in status_clean for k in ["위험", "적자", "부도", "자본잠식"]):
             r2.font.color.rgb = RED
         elif any(k in status_clean for k in ["양호", "안전"]):
             r2.font.color.rgb = BLUE
@@ -580,9 +581,9 @@ if st.button("🚀 5대 지표 심층 분석 실행", type="primary"):
             "매출액영업이익률": safe_div(op, rev) * 100,
             "이자보상배율": safe_div(op, ie)
         }
-        
+
         report = generate_financial_report(metrics)
-        
+
         # 새로고침 시 데이터 보존을 위해 세션 저장
         st.session_state['metrics'] = metrics
         st.session_state['report'] = report
