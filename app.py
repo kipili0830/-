@@ -5,6 +5,7 @@ import os
 import io
 import re
 from datetime import datetime
+from PyPDF2 import PdfReader
 from docx import Document
 from docx.shared import Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -33,21 +34,15 @@ GRAY = RGBColor(0x6B, 0x72, 0x80)
 # ==========================================
 st.set_page_config(page_title="재무제표 AI 분석 시스템", page_icon="📊", layout="wide")
 
-# ---- 전역 스타일 (대시보드 톤앤매너 적용) ----
-# 참고: data-testid 기반 선택자는 Streamlit 버전에 따라 달라질 수 있습니다.
-# 버전이 크게 다르면 아래 선택자만 최신 testid로 교체하면 됩니다.
 CUSTOM_CSS = f"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap');
-
 html, body, [class*="css"] {{
     font-family: 'Noto Sans KR', -apple-system, BlinkMacSystemFont, sans-serif;
 }}
-
 .stApp {{
     background-color: #{LIGHT_GRAY_HEX};
 }}
-
 /* ---- 상단 헤더 (브랜드 바) ---- */
 .top-header {{
     display: flex;
@@ -98,7 +93,6 @@ html, body, [class*="css"] {{
     font-size: 11px;
     margin-top: 6px;
 }}
-
 /* ---- 섹션 헤더 (국문 | English 스타일) ---- */
 .section-header {{
     display: flex;
@@ -126,7 +120,6 @@ html, body, [class*="css"] {{
     font-weight: 800;
     margin: 18px 0 10px 0;
 }}
-
 /* ---- KPI 카드형 지표 (st.metric) ---- */
 div[data-testid="stMetric"] {{
     background: #FFFFFF;
@@ -137,7 +130,6 @@ div[data-testid="stMetric"] {{
 }}
 div[data-testid="stMetricLabel"] {{ color: #{GRAY_HEX}; font-weight: 700; }}
 div[data-testid="stMetricValue"] {{ color: #{NAVY_HEX}; font-weight: 800; }}
-
 /* ---- 버튼 ---- */
 .stButton > button, .stDownloadButton > button {{
     border-radius: 8px;
@@ -159,18 +151,15 @@ div[data-testid="stMetricValue"] {{ color: #{NAVY_HEX}; font-weight: 800; }}
     background-color: #C93A30;
     color: #FFFFFF;
 }}
-
 /* ---- 카드형 컨테이너(필터 패널 느낌) ---- */
 div[data-testid="stVerticalBlockBorderWrapper"] {{
     background: #FAFBFD;
     border-radius: 12px;
 }}
-
 /* ---- 알림 박스 ---- */
 div[data-testid="stAlert"] {{
     border-radius: 10px;
 }}
-
 /* ---- 사이드바 ---- */
 section[data-testid="stSidebar"] {{
     background-color: #{NAVY_HEX};
@@ -186,7 +175,6 @@ section[data-testid="stSidebar"] input {{
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
-
 
 def render_top_header():
     st.markdown(
@@ -206,7 +194,6 @@ def render_top_header():
         unsafe_allow_html=True,
     )
 
-
 def section_header(title_kr, title_en):
     st.markdown(
         f"""
@@ -219,10 +206,8 @@ def section_header(title_kr, title_en):
         unsafe_allow_html=True,
     )
 
-
 def sub_header(text):
     st.markdown(f'<div class="sub-header">{text}</div>', unsafe_allow_html=True)
-
 
 render_top_header()
 
@@ -237,8 +222,18 @@ if not API_KEY:
 genai.configure(api_key=API_KEY)
 
 # ==========================================
-# 2. 유틸리티 함수
+# 2. 유틸리티 함수 및 상태 초기화
 # ==========================================
+fields = ["총자산", "총부채", "자기자본", "유동자산", "유동부채", "장단기차입금", "매출액", "영업이익", "이자비용"]
+for field in fields:
+    if field not in st.session_state:
+        st.session_state[field] = 0
+
+if 'report' not in st.session_state:
+    st.session_state['report'] = ""
+if 'metrics' not in st.session_state:
+    st.session_state['metrics'] = None
+
 def safe_div(numerator, denominator):
     try:
         if denominator == 0 or denominator is None:
@@ -247,21 +242,40 @@ def safe_div(numerator, denominator):
     except (TypeError, ValueError):
         return 0.0
 
-def extract_financial_data(pdf_bytes):
-    model = genai.GenerativeModel('gemini-3.6-flash')
-    prompt = """
-    당신은 20년 경력의 재무 분석가입니다. 첨부된 재무제표 PDF를 읽고 다음 9가지 항목의 숫자를 추출하세요:
-    1. 총자산, 2. 총부채, 3. 자기자본(자본총계), 4. 유동자산, 5. 유동부채, 6. 장단기차입금(장기차입금+단기차입금), 7. 매출액, 8. 영업이익, 9. 이자비용
-    [조건]
-    - 단위(예: 백만원)를 파악하고, 무조건 '1원 단위의 절대금액(정수)'으로 변환하세요.
-    - 반드시 아래의 순수 JSON 형식으로만 답변하세요.
-    {"총자산": 0, "총부채": 0, "자기자본": 0, "유동자산": 0, "유동부채": 0, "장단기차입금": 0, "매출액": 0, "영업이익": 0, "이자비용": 0}
-    """
-    response = model.generate_content([{"mime_type": "application/pdf", "data": pdf_bytes}, prompt])
+def extract_text_from_pdf(pdf_file):
+    """PDF 바이트 데이터를 받아 텍스트를 추출하는 안전한 함수"""
     try:
+        pdf_reader = PdfReader(io.BytesIO(pdf_file))
+        text = ""
+        for page in pdf_reader.pages:
+            text += page.extract_text() or ""
+        return text
+    except Exception as e:
+        st.error(f"PDF 파일 읽기 실패: {e}")
+        return ""
+
+def extract_financial_data(pdf_text):
+    """추출된 PDF 텍스트에서 재무제표 9대 데이터를 추출하는 안전한 AI 로직"""
+    model = genai.GenerativeModel('gemini-3.6-flash')
+    prompt = f"""
+    당신은 20년 경력의 재무 분석가입니다. 아래 재무제표 텍스트를 읽고 다음 9가지 항목의 숫자를 추출하세요:
+    1. 총자산, 2. 총부채, 3. 자기자본(자본총계), 4. 유동자산, 5. 유동부채, 6. 장단기차입금(장기차입금+단기차입금), 7. 매출액, 8. 영업이익, 9. 이자비용
+
+    [조건]
+    - 단위(예: 백만원, 천원 등)를 텍스트 상단에서 정확히 파악하고, 무조건 '1원 단위의 절대금액(정수)'으로 계산하여 변환하세요.
+    - 반드시 아래의 순수 JSON 형식으로만 답변하세요. 다른 설명은 금지합니다.
+    {{"총자산": 0, "총부채": 0, "자기자본": 0, "유동자산": 0, "유동부채": 0, "장단기차입금": 0, "매출액": 0, "영업이익": 0, "이자비용": 0}}
+
+    --- 재무제표 텍스트 시작 ---
+    {pdf_text}
+    --- 재무제표 텍스트 끝 ---
+    """
+    try:
+        response = model.generate_content(prompt)
         clean_text = response.text.replace("```json", "").replace("```", "").strip()
         return json.loads(clean_text)
-    except:
+    except Exception as e:
+        st.error(f"AI 데이터 추출 중 에러 발생: {e}")
         return None
 
 def generate_financial_report(metrics_data):
@@ -270,6 +284,7 @@ def generate_financial_report(metrics_data):
     prompt = f"""
     당신은 기업의 재무 건전성을 평가하는 시니어 재무 분석가입니다.
     다음 산출된 5대 재무 지표를 심층 진단하세요.
+
     [산출 데이터]
     - 부채비율: {debt_ratio_str}
     - 유동비율: {metrics_data['유동비율']:.1f}%
@@ -285,6 +300,7 @@ def generate_financial_report(metrics_data):
     (1) 부채비율: 292.5% - :red[위험]
     - 기준: 일반 제조업 권장 기준 200% 이하
     - 진단: 권장 기준을 크게 초과하여 타인자본 의존도가 매우 높은 :red[불안정한 상태]입니다.
+
     (2) 유동비율: 109.2% - :orange[주의]
     - 기준: 일반 제조업 권장 기준 150% 이상
     - 진단: 100%를 겨우 넘어 단기 채무를 가까스로 상환할 수 있는 :orange[아슬아슬한 유동성 수준]입니다.
@@ -295,17 +311,34 @@ def generate_financial_report(metrics_data):
     return response.text
 
 def extract_status_from_report(report_text, metric_name):
-    pattern = re.compile(f".*?{metric_name}.*?(-|:).*?(:red|:blue|:orange)\[(.*?)\]", re.DOTALL)
+    # 정규식 패턴 완화하여 견고하게 1차 매칭
+    pattern = re.compile(f"{metric_name}.*?(-|:).*?(:red|:blue|:orange)\\[(.*?)\\]", re.DOTALL)
     match = pattern.search(report_text)
     if match:
         status_text = match.group(3)
-        if "위험" in status_text or "적자" in status_text or "부도" in status_text or "주의" in status_text:
-             return f"🚨 {status_text}"
-        elif "양호" in status_text or "안전" in status_text:
-             return f"🔵 {status_text}"
+    else:
+        # 정규식 실패 시 텍스트 파싱을 통한 2차 Fallback 안전 장치
+        metric_lines = [line for line in report_text.split('\n') if metric_name in line]
+        if metric_lines:
+            target_line = metric_lines[0]
+            if "위험" in target_line or "적자" in target_line or "부도" in target_line or "자본잠식" in target_line:
+                status_text = "위험"
+            elif "주의" in target_line:
+                status_text = "주의"
+            elif "양호" in target_line or "안전" in target_line:
+                status_text = "양호"
+            else:
+                status_text = "보통"
         else:
-             return f"🟠 {status_text}"
-    return "⚪️ 분석중"
+            return "⚪️ 분석전"
+
+    # 시각화 이모지 설정
+    if any(k in status_text for k in ["위험", "적자", "부도", "자본잠식"]):
+         return f"🚨 {status_text}"
+    elif any(k in status_text for k in ["양호", "안전"]):
+         return f"🔵 {status_text}"
+    else:
+         return f"🟠 {status_text}"
 
 # ---- 워드 문서용 스타일 헬퍼 ----
 def set_cell_background(cell, color_hex):
@@ -332,7 +365,6 @@ COLOR_MAP = {"red": RED, "blue": BLUE, "orange": ORANGE}
 TAG_PATTERN = re.compile(r':(red|blue|orange)\[(.*?)\]')
 
 def add_rich_text(paragraph, text, bold=False, base_size=10.5):
-    """':red[...]', ':blue[...]', ':orange[...]' 태그를 워드 색상 텍스트로 변환하며 추가"""
     pos = 0
     has_content = False
     for m in TAG_PATTERN.finditer(text):
@@ -359,9 +391,7 @@ def add_rich_text(paragraph, text, bold=False, base_size=10.5):
         run.bold = bold
 
 def generate_word_document(metrics, report_text):
-    """워드 문서 생성 함수 (현대렌탈케어 SCM 대시보드 톤앤매너 적용)"""
     doc = Document()
-
     base_style = doc.styles['Normal']
     base_style.font.name = '맑은 고딕'
     base_style.font.size = Pt(10.5)
@@ -404,6 +434,7 @@ def generate_word_document(metrics, report_text):
     table = doc.add_table(rows=1, cols=3)
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
     table.style = 'Table Grid'
+
     headers = ["지표", "산출값", "진단"]
     hdr_cells = table.rows[0].cells
     for i, h in enumerate(headers):
@@ -421,40 +452,43 @@ def generate_word_document(metrics, report_text):
         ("유동비율", f"{metrics['유동비율']:.1f}%", extract_status_from_report(report_text, "유동비율")),
         ("차입금의존도", f"{metrics['차입금의존도']:.1f}%", extract_status_from_report(report_text, "차입금의존도")),
         ("매출액영업이익률", f"{metrics['매출액영업이익률']:.1f}%", extract_status_from_report(report_text, "매출액영업이익률")),
-        ("이자보상배율", f"{metrics['이자보상배율']:.2f}배", extract_status_from_report(report_text, "이자보상배율")),
+        ("이자보상배율", f"{metrics['이자보상배율']:.2f}배" if isinstance(metrics['이자보상배율'], (int, float)) else "산출불가", extract_status_from_report(report_text, "이자보상배율")),
     ]
+
     for idx, (name, val, status) in enumerate(rows_data):
         row_cells = table.add_row().cells
-
+        
+        # 1열: 지표명
         p0 = row_cells[0].paragraphs[0]
         r0 = p0.add_run(name)
         r0.font.size = Pt(10.5)
         r0.bold = True
         r0.font.color.rgb = NAVY
-
-        p1 = row_cells[1].paragraphs[0]
+        
+        # 2열: 산출값
+        p1 = row_cells.paragraphs[0]
         p1.alignment = WD_ALIGN_PARAGRAPH.CENTER
         r1 = p1.add_run(val)
         r1.font.size = Pt(10.5)
-
+        
+        # 3열: 진단 결과
         p2 = row_cells[2].paragraphs[0]
         p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
         status_clean = status.replace("🚨", "").replace("🔵", "").replace("🟠", "").replace("⚪️", "").strip()
         r2 = p2.add_run(status_clean)
         r2.bold = True
         r2.font.size = Pt(10.5)
+
         if any(k in status_clean for k in ["위험", "적자", "부도", "주의", "자본잠식"]):
             r2.font.color.rgb = RED
         elif any(k in status_clean for k in ["양호", "안전"]):
             r2.font.color.rgb = BLUE
-        elif "분석중" in status_clean:
-            r2.font.color.rgb = GRAY
         else:
             r2.font.color.rgb = ORANGE
 
         if idx % 2 == 1:
             for c in row_cells:
-                set_cell_background(c, LIGHT_GRAY_HEX if False else "F4F6FA")
+                set_cell_background(c, "F4F6FA")
 
     spacer = doc.add_paragraph()
     spacer.paragraph_format.space_after = Pt(6)
@@ -502,11 +536,6 @@ def generate_word_document(metrics, report_text):
 # ==========================================
 # 3. UI 및 워크플로우 구성
 # ==========================================
-fields = ["총자산", "총부채", "자기자본", "유동자산", "유동부채", "장단기차입금", "매출액", "영업이익", "이자비용"]
-for field in fields:
-    if field not in st.session_state:
-        st.session_state[field] = 0
-
 st.warning("⚠️ 주의: 본 시스템에는 DART(전자공시시스템) 등에 공시된 공개용 재무제표 PDF만 업로드해 주시기 바랍니다.")
 
 section_header("1. 재무제표 PDF 업로드", "PDF Upload")
@@ -515,11 +544,13 @@ with st.container(border=True):
     if uploaded_file is not None:
         if st.button("📄 AI로 숫자 자동 추출하기", type="primary"):
             with st.spinner("AI가 문서를 분석 중입니다..."):
-                extracted_data = extract_financial_data(uploaded_file.read())
-                if extracted_data:
-                    for field in fields:
-                        st.session_state[field] = extracted_data.get(field, 0)
-                    st.success("추출 완료! 아래에서 숫자를 확인하세요.")
+                pdf_text = extract_text_from_pdf(uploaded_file.read())
+                if pdf_text:
+                    extracted_data = extract_financial_data(pdf_text)
+                    if extracted_data:
+                        for field in fields:
+                            st.session_state[field] = extracted_data.get(field, 0)
+                        st.success("추출 완료! 아래에서 숫자를 확인하세요.")
 
 section_header("2. 재무 데이터 검증 및 수정", "Data Verification · 단위: 원")
 with st.container(border=True):
@@ -549,28 +580,35 @@ if st.button("🚀 5대 지표 심층 분석 실행", type="primary"):
             "매출액영업이익률": safe_div(op, rev) * 100,
             "이자보상배율": safe_div(op, ie)
         }
-
+        
         report = generate_financial_report(metrics)
+        
+        # 새로고침 시 데이터 보존을 위해 세션 저장
+        st.session_state['metrics'] = metrics
         st.session_state['report'] = report
 
-        sub_header("🧮 핵심 지표 계산 결과 (AI 진단 연동)")
-        c1, c2, c3, c4, c5 = st.columns(5)
+# 세션에 리포트 결과가 있는 경우 화면에 렌더링 (새로고침 방어)
+if st.session_state['report'] and st.session_state['metrics']:
+    report = st.session_state['report']
+    metrics = st.session_state['metrics']
+    debt_ratio_val = metrics["부채비율"]
 
-        c1.metric("부채비율", debt_ratio_val if isinstance(debt_ratio_val, str) else f"{debt_ratio_val:.1f}%", extract_status_from_report(report, "부채비율"), delta_color="off")
-        c2.metric("유동비율", f"{metrics['유동비율']:.1f}%", extract_status_from_report(report, "유동비율"), delta_color="off")
-        c3.metric("차입금의존도", f"{metrics['차입금의존도']:.1f}%", extract_status_from_report(report, "차입금의존도"), delta_color="off")
-        c4.metric("영업이익률", f"{metrics['매출액영업이익률']:.1f}%", extract_status_from_report(report, "매출액영업이익률"), delta_color="off")
-        c5.metric("이자보상배율", f"{metrics['이자보상배율']:.2f}배", extract_status_from_report(report, "이자보상배율"), delta_color="off")
+    sub_header("🧮 핵심 지표 계산 결과 (AI 진단 연동)")
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("부채비율", debt_ratio_val if isinstance(debt_ratio_val, str) else f"{debt_ratio_val:.1f}%", extract_status_from_report(report, "부채비율"), delta_color="off")
+    c2.metric("유동비율", f"{metrics['유동비율']:.1f}%", extract_status_from_report(report, "유동비율"), delta_color="off")
+    c3.metric("차입금의존도", f"{metrics['차입금의존도']:.1f}%", extract_status_from_report(report, "차입금의존도"), delta_color="off")
+    c4.metric("영업이익률", f"{metrics['매출액영업이익률']:.1f}%", extract_status_from_report(report, "매출액영업이익률"), delta_color="off")
+    c5.metric("이자보상배율", f"{metrics['이자보상배율']:.2f}배" if isinstance(metrics['이자보상배율'], (int, float)) else "산출불가", extract_status_from_report(report, "이자보상배율"), delta_color="off")
 
-        sub_header("🤖 AI 심층 진단 리포트 (색상 시각화 적용)")
-        with st.container(border=True):
-            st.write(report)
+    sub_header("🤖 AI 심층 진단 리포트 (색상 시각화 적용)")
+    with st.container(border=True):
+        st.write(report)
 
-        word_data = generate_word_document(metrics, report)
-
-        st.download_button(
-            label="📄 분석 결과 워드(Word) 리포트 다운로드",
-            data=word_data,
-            file_name="재무분석_심층리포트.docx",
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        )
+    word_data = generate_word_document(metrics, report)
+    st.download_button(
+        label="📄 분석 결과 워드(Word) 리포트 다운로드",
+        data=word_data,
+        file_name="재무분석_심층리포트.docx",
+        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
